@@ -252,7 +252,7 @@ class TetrisGame {
             arrayOf(
                 intArrayOf(1, 0, 0, 1, 1, 1, 2, 1),
                 intArrayOf(1, 0, 1, 1, 2, 1, 1, 2),
-                intArrayOf(1, 1, 0, 2, 1, 2, 2, 2),
+                intArrayOf(0, 1, 1, 1, 2, 1, 1, 2),
                 intArrayOf(1, 0, 0, 1, 1, 1, 1, 2)
             ),
             arrayOf(
