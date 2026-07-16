@@ -74,8 +74,8 @@ class GameView(context: Context) : View(context) {
         color = primaryText
     }
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        isStrokeCap = Paint.Cap.ROUND
-        isStrokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
         style = Paint.Style.STROKE
     }
 
