@@ -10,6 +10,11 @@ class TetrisGame {
         const val PIECE_COUNT = 7
     }
 
+    data class StepResult(
+        val pieceLocked: Boolean = false,
+        val clearedRows: List<Int> = emptyList()
+    )
+
     val board: Array<IntArray> = Array(BOARD_HEIGHT) { IntArray(BOARD_WIDTH) }
 
     var activeType: Int = 0
@@ -32,6 +37,10 @@ class TetrisGame {
         private set
     var isGameOver: Boolean = false
         private set
+    var isClearing: Boolean = false
+        private set
+    var clearingRows: List<Int> = emptyList()
+        private set
 
     private val random = Random()
     private val bag = mutableListOf<Int>()
@@ -47,6 +56,8 @@ class TetrisGame {
         level = 1
         isPaused = false
         isGameOver = false
+        isClearing = false
+        clearingRows = emptyList()
         bag.clear()
         activeType = drawPiece()
         nextPieceType = drawPiece()
@@ -56,7 +67,7 @@ class TetrisGame {
     }
 
     fun togglePause() {
-        if (!isGameOver) isPaused = !isPaused
+        if (!isGameOver && !isClearing) isPaused = !isPaused
     }
 
     fun pauseForLifecycle() {
@@ -67,28 +78,26 @@ class TetrisGame {
 
     fun moveRight(): Boolean = moveHorizontal(1)
 
-    fun softDrop(): Boolean {
-        if (!canPlay()) return false
+    fun softDrop(): StepResult {
+        if (!canPlay()) return StepResult()
         return if (canPlace(activeType, activeRotation, activeX, activeY + 1)) {
             activeY += 1
             score += 1
-            true
+            StepResult()
         } else {
             lockPiece()
-            true
         }
     }
 
-    fun hardDrop(): Boolean {
-        if (!canPlay()) return false
+    fun hardDrop(): StepResult {
+        if (!canPlay()) return StepResult()
         var distance = 0
         while (canPlace(activeType, activeRotation, activeX, activeY + 1)) {
             activeY += 1
             distance += 1
         }
         score += distance * 2
-        lockPiece()
-        return true
+        return lockPiece()
     }
 
     fun rotate(): Boolean {
@@ -106,14 +115,31 @@ class TetrisGame {
     }
 
     /** Advances the automatic gravity step. */
-    fun tick() {
-        if (canPlay()) {
-            if (!canPlace(activeType, activeRotation, activeX, activeY + 1)) {
-                lockPiece()
-            } else {
-                activeY += 1
-            }
+    fun tick(): StepResult {
+        if (!canPlay()) return StepResult()
+        return if (!canPlace(activeType, activeRotation, activeX, activeY + 1)) {
+            lockPiece()
+        } else {
+            activeY += 1
+            StepResult()
         }
+    }
+
+    fun completeLineClear() {
+        if (!isClearing) return
+        val cleared = clearingRows.size
+        collapseClearingRows()
+        lines += cleared
+        level = lines / 10 + 1
+        score += when (cleared) {
+            1 -> 100 * level
+            2 -> 300 * level
+            3 -> 500 * level
+            else -> 800 * level
+        }
+        isClearing = false
+        clearingRows = emptyList()
+        spawnNextPiece()
     }
 
     fun ghostY(): Int {
@@ -139,7 +165,7 @@ class TetrisGame {
         return false
     }
 
-    private fun canPlay(): Boolean = !isPaused && !isGameOver
+    private fun canPlay(): Boolean = !isPaused && !isGameOver && !isClearing
 
     private fun canPlace(type: Int, rotation: Int, x: Int, y: Int): Boolean {
         val cells = cellsFor(type, rotation)
@@ -154,7 +180,7 @@ class TetrisGame {
         return true
     }
 
-    private fun lockPiece() {
+    private fun lockPiece(): StepResult {
         val cells = currentCells()
         var index = 0
         while (index < cells.size) {
@@ -168,20 +194,42 @@ class TetrisGame {
             index += 2
         }
 
-        if (isGameOver) return
+        if (isGameOver) return StepResult(pieceLocked = true)
 
-        val cleared = clearCompletedRows()
-        if (cleared > 0) {
-            lines += cleared
-            level = lines / 10 + 1
-            score += when (cleared) {
-                1 -> 100 * level
-                2 -> 300 * level
-                3 -> 500 * level
-                else -> 800 * level
-            }
+        val fullRows = findFullRows()
+        if (fullRows.isNotEmpty()) {
+            isClearing = true
+            clearingRows = fullRows
+            return StepResult(pieceLocked = true, clearedRows = fullRows)
         }
 
+        spawnNextPiece()
+        return StepResult(pieceLocked = true)
+    }
+
+    private fun findFullRows(): List<Int> {
+        val rows = mutableListOf<Int>()
+        for (row in 0 until BOARD_HEIGHT) {
+            if (board[row].all { it != 0 }) rows.add(row)
+        }
+        return rows
+    }
+
+    private fun collapseClearingRows() {
+        val full = clearingRows.toSet()
+        var writeRow = BOARD_HEIGHT - 1
+        for (readRow in BOARD_HEIGHT - 1 downTo 0) {
+            if (readRow in full) continue
+            if (writeRow != readRow) board[writeRow] = board[readRow].copyOf()
+            writeRow -= 1
+        }
+        while (writeRow >= 0) {
+            board[writeRow] = IntArray(BOARD_WIDTH)
+            writeRow -= 1
+        }
+    }
+
+    private fun spawnNextPiece() {
         activeType = nextPieceType
         nextPieceType = drawPiece()
         activeRotation = 0
@@ -190,24 +238,6 @@ class TetrisGame {
         if (!canPlace(activeType, activeRotation, activeX, activeY)) {
             isGameOver = true
         }
-    }
-
-    private fun clearCompletedRows(): Int {
-        var writeRow = BOARD_HEIGHT - 1
-        var cleared = 0
-        for (readRow in BOARD_HEIGHT - 1 downTo 0) {
-            if (board[readRow].all { it != 0 }) {
-                cleared += 1
-            } else {
-                if (writeRow != readRow) board[writeRow] = board[readRow].copyOf()
-                writeRow -= 1
-            }
-        }
-        while (writeRow >= 0) {
-            board[writeRow] = IntArray(BOARD_WIDTH)
-            writeRow -= 1
-        }
-        return cleared
     }
 
     private fun spawnX(type: Int): Int = when (type) {

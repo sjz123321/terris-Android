@@ -30,14 +30,39 @@ class GameView(context: Context) : View(context) {
     )
 
     private val game = TetrisGame()
+    private val soundManager = SoundManager(context)
     private val handler = Handler(Looper.getMainLooper())
+    private var clearAnimProgress = 0f
+    private var clearAnimActive = false
+    private val clearAnimDurationMs = 420L
+    private var clearAnimStartMs = 0L
+
     private val ticker = object : Runnable {
         override fun run() {
-            if (!game.isPaused && !game.isGameOver) {
-                game.tick()
+            if (clearAnimActive) {
+                val elapsed = android.os.SystemClock.uptimeMillis() - clearAnimStartMs
+                clearAnimProgress = (elapsed.toFloat() / clearAnimDurationMs).coerceIn(0f, 1f)
+                if (clearAnimProgress >= 1f) {
+                    clearAnimActive = false
+                    game.completeLineClear()
+                    invalidate()
+                    handler.postDelayed(this, game.dropDelayMillis())
+                    return
+                }
+                invalidate()
+                handler.postDelayed(this, 16L)
+                return
+            }
+            if (!game.isPaused && !game.isGameOver && !game.isClearing) {
+                handleStep(game.tick())
                 invalidate()
             }
-            handler.postDelayed(this, if (game.isPaused || game.isGameOver) 240L else game.dropDelayMillis())
+            val delay = when {
+                game.isPaused || game.isGameOver -> 240L
+                game.isClearing -> 16L
+                else -> game.dropDelayMillis()
+            }
+            handler.postDelayed(this, delay)
         }
     }
 
@@ -89,17 +114,46 @@ class GameView(context: Context) : View(context) {
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        soundManager.startBackground()
         handler.removeCallbacks(ticker)
         handler.post(ticker)
     }
 
     override fun onDetachedFromWindow() {
         handler.removeCallbacks(ticker)
+        soundManager.release()
         super.onDetachedFromWindow()
     }
 
     fun pauseForLifecycle() {
         game.pauseForLifecycle()
+        soundManager.pauseBackground()
+        invalidate()
+    }
+
+    fun resumeAudio() {
+        if (!game.isPaused && !game.isGameOver) soundManager.resumeBackground()
+    }
+
+    private fun handleStep(result: TetrisGame.StepResult) {
+        if (result.pieceLocked) soundManager.playDrop()
+        if (result.clearedRows.isNotEmpty()) {
+            soundManager.playLineClear()
+            clearAnimActive = true
+            clearAnimProgress = 0f
+            clearAnimStartMs = android.os.SystemClock.uptimeMillis()
+        }
+    }
+
+    private fun applyAction(block: () -> TetrisGame.StepResult) {
+        if (clearAnimActive || game.isClearing) return
+        handleStep(block())
+        invalidate()
+    }
+
+    private fun applyBooleanAction(block: () -> Boolean) {
+        if (clearAnimActive || game.isClearing) return
+        block()
         invalidate()
     }
 
@@ -273,25 +327,66 @@ class GameView(context: Context) : View(context) {
             canvas.drawLine(geometry.boardLeft, y, geometry.boardLeft + geometry.boardWidth, y, strokePaint)
         }
 
+        val clearing = game.clearingRows.toSet()
         for (row in 0 until TetrisGame.BOARD_HEIGHT) {
             for (column in 0 until TetrisGame.BOARD_WIDTH) {
                 val colorIndex = game.board[row][column]
                 if (colorIndex != 0) {
-                    drawBlock(
-                        canvas,
-                        geometry.boardLeft + column * geometry.cell,
-                        geometry.boardTop + row * geometry.cell,
-                        geometry.cell,
-                        colorIndex
-                    )
+                    if (row in clearing && clearAnimActive) {
+                        drawClearingBlock(
+                            canvas,
+                            geometry.boardLeft + column * geometry.cell,
+                            geometry.boardTop + row * geometry.cell,
+                            geometry.cell,
+                            colorIndex
+                        )
+                    } else {
+                        drawBlock(
+                            canvas,
+                            geometry.boardLeft + column * geometry.cell,
+                            geometry.boardTop + row * geometry.cell,
+                            geometry.cell,
+                            colorIndex
+                        )
+                    }
                 }
             }
         }
 
-        if (!game.isGameOver) {
+        if (!game.isGameOver && !game.isClearing) {
             val ghostY = game.ghostY()
             drawGhost(canvas, geometry, ghostY)
             drawActive(canvas, geometry)
+        }
+    }
+
+    private fun drawClearingBlock(canvas: Canvas, left: Float, top: Float, size: Float, colorIndex: Int) {
+        val flash = (kotlin.math.sin(clearAnimProgress * Math.PI * 4).toFloat() * 0.5f + 0.5f)
+        val shrink = 1f - clearAnimProgress * 0.35f
+        val alpha = ((1f - clearAnimProgress) * 255f).toInt().coerceIn(0, 255)
+        val inset = size * (0.08f + clearAnimProgress * 0.18f)
+        val centerX = left + size / 2f
+        val centerY = top + size / 2f
+        val half = size * 0.5f * shrink
+        val rect = RectF(centerX - half + inset, centerY - half + inset, centerX + half - inset, centerY + half - inset)
+        val base = pieceColors[(colorIndex - 1).coerceIn(0, pieceColors.lastIndex)]
+        val whiteMix = (flash * 180).toInt()
+        fillPaint.color = Color.argb(
+            alpha,
+            (Color.red(base) + whiteMix).coerceAtMost(255),
+            (Color.green(base) + whiteMix).coerceAtMost(255),
+            (Color.blue(base) + whiteMix).coerceAtMost(255)
+        )
+        canvas.drawRoundRect(rect, size * 0.14f, size * 0.14f, fillPaint)
+        if (clearAnimProgress > 0.35f) {
+            fillPaint.color = Color.argb(((1f - clearAnimProgress) * 120f).toInt(), 255, 255, 255)
+            canvas.drawRect(
+                left,
+                top + size * 0.35f,
+                left + size,
+                top + size * 0.65f,
+                fillPaint
+            )
         }
     }
 
@@ -481,39 +576,39 @@ class GameView(context: Context) : View(context) {
                 performClick()
                 if (game.isGameOver) {
                     game.reset()
+                    soundManager.resumeBackground()
                     invalidate()
                     return true
                 }
                 if (geometry.pauseButton.contains(event.x, event.y)) {
                     game.togglePause()
+                    if (game.isPaused) soundManager.pauseBackground() else soundManager.resumeBackground()
                     invalidate()
                     return true
                 }
-                if (game.isPaused) return true
+                if (game.isPaused || clearAnimActive || game.isClearing) return true
 
                 val buttonIndex = geometry.controls.indexOfFirst { it.contains(event.x, event.y) }
                 if (buttonIndex >= 0) {
                     when (buttonIndex) {
-                        0 -> game.moveLeft()
-                        1 -> game.softDrop()
-                        2 -> game.hardDrop()
-                        3 -> game.moveRight()
-                        4 -> game.rotate()
+                        0 -> applyBooleanAction { game.moveLeft() }
+                        1 -> applyAction { game.softDrop() }
+                        2 -> applyAction { game.hardDrop() }
+                        3 -> applyBooleanAction { game.moveRight() }
+                        4 -> applyBooleanAction { game.rotate() }
                     }
-                    invalidate()
                     return true
                 }
 
                 val dx = event.x - downX
                 val dy = event.y - downY
-                if (abs(dx) > abs(dy) && abs(dx) > dp(18f)) {
-                    if (dx < 0) game.moveLeft() else game.moveRight()
-                } else if (dy > dp(24f)) {
-                    game.hardDrop()
-                } else {
-                    game.rotate()
+                when {
+                    abs(dx) > abs(dy) && abs(dx) > dp(18f) -> {
+                        if (dx < 0) applyBooleanAction { game.moveLeft() } else applyBooleanAction { game.moveRight() }
+                    }
+                    dy > dp(24f) -> applyAction { game.hardDrop() }
+                    else -> applyBooleanAction { game.rotate() }
                 }
-                invalidate()
                 return true
             }
         }
@@ -528,19 +623,24 @@ class GameView(context: Context) : View(context) {
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (game.isGameOver) {
             game.reset()
+            soundManager.resumeBackground()
             invalidate()
             return true
         }
+        if (clearAnimActive || game.isClearing) return true
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> game.moveLeft()
-            KeyEvent.KEYCODE_DPAD_RIGHT -> game.moveRight()
-            KeyEvent.KEYCODE_DPAD_DOWN -> game.softDrop()
-            KeyEvent.KEYCODE_DPAD_UP -> game.rotate()
-            KeyEvent.KEYCODE_SPACE -> game.hardDrop()
-            KeyEvent.KEYCODE_P -> game.togglePause()
+            KeyEvent.KEYCODE_DPAD_LEFT -> applyBooleanAction { game.moveLeft() }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> applyBooleanAction { game.moveRight() }
+            KeyEvent.KEYCODE_DPAD_DOWN -> applyAction { game.softDrop() }
+            KeyEvent.KEYCODE_DPAD_UP -> applyBooleanAction { game.rotate() }
+            KeyEvent.KEYCODE_SPACE -> applyAction { game.hardDrop() }
+            KeyEvent.KEYCODE_P -> {
+                game.togglePause()
+                if (game.isPaused) soundManager.pauseBackground() else soundManager.resumeBackground()
+                invalidate()
+            }
             else -> return super.onKeyDown(keyCode, event)
         }
-        invalidate()
         return true
     }
 

@@ -17,6 +17,11 @@ class MainActivity : Activity() {
         setContentView(gameView)
     }
 
+    override fun onResume() {
+        super.onResume()
+        gameView.resumeAudio()
+    }
+
     override fun onPause() {
         gameView.pauseForLifecycle()
         super.onPause()
